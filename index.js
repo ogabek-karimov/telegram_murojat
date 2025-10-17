@@ -109,6 +109,14 @@ const STATE = Object.create(null); // { [chatId]: { awaitingRequest: boolean } }
 const PAGE_SIZE = 10;
 const formatTime = (d = new Date()) => new Date(d).toLocaleString('uz-UZ', { hour12: false });
 
+// Markdown (legacy) uchun minimal xavfsiz escape
+function mdEscape(input) {
+  if (input === null || input === undefined) return '';
+  const s = String(input);
+  // Escape: _ * [ ] ( )
+  return s.replace(/([_*\[\]()])/g, '\\$1');
+}
+
 function ensureUser(userId, fromMeta) {
   const key = String(userId);
   if (!DB.users[key]) DB.users[key] = asLegacyUser(userId, {}, fromMeta);
@@ -116,9 +124,12 @@ function ensureUser(userId, fromMeta) {
 function userLine(userId, fromMeta) {
   const key = String(userId);
   const u = DB.users[key] || asLegacyUser(userId, {}, fromMeta);
-  return `👤 *Foydalanuvchi:* ${u.firstName || 'Noma’lum'}
-🔗 *Username:* ${u.username || '—'}
-☎️ *Telefon:* ${u.phoneNumber || '—'}
+  const firstName = mdEscape(u.firstName || 'Noma’lum');
+  const username = mdEscape(u.username || '—');
+  const phone = mdEscape(u.phoneNumber || '—');
+  return `👤 *Foydalanuvchi:* ${firstName}
+🔗 *Username:* ${username}
+☎️ *Telefon:* ${phone}
 🆔 *UserID:* \`${u.userId}\``;
 }
 function paginate(list, page) {
@@ -157,7 +168,8 @@ function adminRequestsText(page = 0) {
   slice.forEach((r, idx) => {
     out += `*#${p * PAGE_SIZE + idx + 1}* | 🕒 ${formatTime(r.at)}\n`;
     out += `${userLine(r.userId, r.from)}\n`;
-    out += `✉️ *Matn:* ${r.text}\n`;
+    const safeText = mdEscape(r.text || '');
+    out += `✉️ *Matn:* ${safeText}\n`;
     if (r.media) out += `📎 Media: ${r.media.type} (${r.media.file_id})\n`;
     out += `— — —\n`;
   });
@@ -172,9 +184,9 @@ function adminPhonesText(page = 0) {
   slice.forEach((u, idx) => {
     out += `*#${p * PAGE_SIZE + idx + 1}* | 🕒 ${formatTime(u.updatedAt)}\n`;
     out += `🆔 \`${u.userId}\`\n`;
-    out += `👤 ${u.firstName || '—'}\n`;
-    out += `🔗 ${u.username || '—'}\n`;
-    out += `☎️ ${u.phoneNumber}\n`;
+    out += `👤 ${mdEscape(u.firstName || '—')}\n`;
+    out += `🔗 ${mdEscape(u.username || '—')}\n`;
+    out += `☎️ ${mdEscape(u.phoneNumber)}\n`;
     out += `— — —\n`;
   });
   return { text: out.trim(), p, pages };
@@ -358,10 +370,11 @@ bot.on('contact', async (msg) => {
 // ================== Xabarlar (faqat foydalanuvchi oqimi) ==================
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
-  const text = (msg.text || '').trim();
+  const typedText = (msg.text || '').trim();
+  const content = (msg.text || msg.caption || '').trim();
 
   // Kontakt/komanda qayta ishlanmaydi
-  if (msg.contact || (text && text.startsWith('/'))) return;
+  if (msg.contact || (typedText && typedText.startsWith('/'))) return;
 
   // ADMIN uchun bu handler emas
   if (msg.from.id === ADMIN_ID) return;
@@ -383,7 +396,7 @@ bot.on('message', async (msg) => {
   }
 
   // 2) Tugma bosish — yumshoq tekshiruv
-  const isRequestBtn = text === BUTTON_REQUEST || /murojaat/i.test(text);
+  const isRequestBtn = typedText === BUTTON_REQUEST || /murojaat/i.test(typedText);
   if (isRequestBtn) {
     STATE[chatId] = { awaitingRequest: true };
     return bot.sendMessage(
@@ -419,7 +432,7 @@ bot.on('message', async (msg) => {
   DB.requests.push({
     id: `${msg.from.id}-${Date.now()}`,
     userId: msg.from.id,
-    text,
+    text: content,
     at: new Date().toISOString(),
     media,
     from: {
@@ -442,7 +455,7 @@ bot.on('message', async (msg) => {
   // Admin ga yuboramiz
   await bot.sendMessage(
     ADMIN_ID,
-    `📨 *Yangi murojaat!*\n${userLine(msg.from.id, msg.from)}\n\n✉️ *Matn:*\n${text}\n\n🕒 ${formatTime()}`,
+    `📨 *Yangi murojaat!*\n${userLine(msg.from.id, msg.from)}\n\n✉️ *Matn:*\n${mdEscape(content)}\n\n🕒 ${formatTime()}`,
     { parse_mode: 'Markdown' }
   );
   if (media) {
