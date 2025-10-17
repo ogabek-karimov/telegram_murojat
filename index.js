@@ -167,7 +167,13 @@ function adminRequestsText(page = 0) {
   let out = `📨 *Murojaatlar* (jami: ${total}) — *${p + 1}/${pages}*\n\n`;
   slice.forEach((r, idx) => {
     out += `*#${p * PAGE_SIZE + idx + 1}* | 🕒 ${formatTime(r.at)}\n`;
-    out += `${userLine(r.userId, r.from)}\n`;
+    const first = [r.from?.first_name, r.from?.last_name].filter(Boolean).join(' ');
+    const username = normUsername(r.from?.username || '');
+    const phone = r.phone || (DB.users?.[String(r.userId)]?.phoneNumber || '');
+    out += `👤 *Foydalanuvchi:* ${mdEscape(first || 'Noma’lum')}\n`;
+    out += `🔗 *Username:* ${mdEscape(username || '—')}\n`;
+    out += `☎️ *Telefon:* ${mdEscape(phone || '—')}\n`;
+    out += `🆔 *UserID:* \`${r.userId}\`\n`;
     const safeText = mdEscape(r.text || '');
     out += `✉️ *Matn:* ${safeText}\n`;
     if (r.media) out += `📎 Media: ${r.media.type} (${r.media.file_id})\n`;
@@ -288,9 +294,9 @@ bot.on('callback_query', async (cq) => {
       }
       fs.writeFileSync(path.join(exportDir, `phones_${stamp}.csv`), toCSV(phones), 'utf8');
 
-      const reqRows = [['request_id', 'user_id', 'time', 'text']];
+      const reqRows = [['request_id', 'user_id', 'time', 'phone', 'text']];
       for (const r of (DB.requests || [])) {
-        reqRows.push([r.id, r.userId, r.at, (r.text || '').replace(/\r?\n/g, ' ')]);
+        reqRows.push([r.id, r.userId, r.at, r.phone || '', (r.text || '').replace(/\r?\n/g, ' ')]);
       }
       fs.writeFileSync(path.join(exportDir, `requests_${stamp}.csv`), toCSV(reqRows), 'utf8');
 
@@ -355,11 +361,17 @@ bot.on('contact', async (msg) => {
   STATE[chatId] = { awaitingRequest: false };
 
   // Adminga xabar
-  await bot.sendMessage(
-    ADMIN_ID,
-    `🆕 *Yangi kontakt ulashildi*\n${userLine(msg.from.id, msg.from)}\n🕒 ${formatTime()}`,
-    { parse_mode: 'Markdown' }
-  );
+  const first = [msg.from.first_name, msg.from.last_name].filter(Boolean).join(' ');
+  const username = normUsername(msg.from.username || '');
+  const phone = DB.users[key]?.phoneNumber || '';
+  const contactAdminMsg =
+    `🆕 *Yangi kontakt ulashildi*\n` +
+    `👤 *Foydalanuvchi:* ${mdEscape(first || 'Noma’lum')}\n` +
+    `🔗 *Username:* ${mdEscape(username || '—')}\n` +
+    `☎️ *Telefon:* ${mdEscape(phone || '—')}\n` +
+    `🆔 *UserID:* \`${msg.from.id}\`\n` +
+    `🕒 ${formatTime()}`;
+  await bot.sendMessage(ADMIN_ID, contactAdminMsg, { parse_mode: 'Markdown' });
 
   // Foydalanuvchiga tugma chiqaramiz
   await bot.sendMessage(chatId, "Rahmat! ✅ Endi murojaatingizni yuborishingiz mumkin.", {
@@ -429,12 +441,14 @@ bot.on('message', async (msg) => {
 
   // saqlash
   DB.requests = DB.requests || [];
+  const phoneSnapshot = DB.users[key]?.phoneNumber || '';
   DB.requests.push({
     id: `${msg.from.id}-${Date.now()}`,
     userId: msg.from.id,
     text: content,
     at: new Date().toISOString(),
     media,
+    phone: phoneSnapshot,
     from: {
       id: msg.from.id,
       first_name: msg.from.first_name,
@@ -453,19 +467,36 @@ bot.on('message', async (msg) => {
   saveDB(DB);
 
   // Admin ga yuboramiz
-  await bot.sendMessage(
-    ADMIN_ID,
-    `📨 *Yangi murojaat!*\n${userLine(msg.from.id, msg.from)}\n\n✉️ *Matn:*\n${mdEscape(content)}\n\n🕒 ${formatTime()}`,
-    { parse_mode: 'Markdown' }
-  );
+  const first = [msg.from.first_name, msg.from.last_name].filter(Boolean).join(' ');
+  const username = normUsername(msg.from.username || '');
+  const adminMsg =
+    `📨 *Yangi murojaat!*\n` +
+    `👤 *Foydalanuvchi:* ${mdEscape(first || 'Noma’lum')}\n` +
+    `🔗 *Username:* ${mdEscape(username || '—')}\n` +
+    `☎️ *Telefon:* ${mdEscape(phoneSnapshot || '—')}\n` +
+    `🆔 *UserID:* \`${msg.from.id}\`\n\n` +
+    `✉️ *Matn:*\n${mdEscape(content)}\n\n` +
+    `🕒 ${formatTime()}`;
+  await bot.sendMessage(ADMIN_ID, adminMsg, { parse_mode: 'Markdown' });
   if (media) {
     if (media.type === 'photo') await bot.sendPhoto(ADMIN_ID, media.file_id, { caption: '📎 Rasm ilova' });
     else await bot.sendDocument(ADMIN_ID, media.file_id, {}, { filename: media.name || 'file' });
   }
 
+  // Telefonni qayta talab qilish uchun bazadan olib tashlaymiz
+  if (DB.users[key]) {
+    DB.users[key].phoneNumber = '';
+    DB.users[key].updatedAt = new Date().toISOString();
+    saveDB(DB);
+  }
+
   // Foydalanuvchiga tasdiq
-  return bot.sendMessage(chatId, "✅ Murojaatingiz qabul qilindi, muammo tez orada hal bo'ladi!", {
-    reply_markup: { keyboard: [[BUTTON_REQUEST]], resize_keyboard: true },
+  return bot.sendMessage(chatId, "✅ Murojaatingiz qabul qilindi! Keyingi murojaat uchun qayta telefon raqamingizni ulashing.", {
+    reply_markup: {
+      keyboard: [[{ text: '📱 Telefon raqamni ulashish', request_contact: true }]],
+      resize_keyboard: true,
+      one_time_keyboard: true,
+    },
   });
 });
 
