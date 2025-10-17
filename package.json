@@ -1,0 +1,17 @@
+{
+    "name": "telegram-contact-bot",
+    "version": "1.0.0",
+    "description": "Telegram bot for collecting user contacts and sending requests to admin.",
+    "main": "index.js",
+    "type": "commonjs",
+    "scripts": {
+      "start": "node index.js"
+    },
+    "author": "Og'abek Karimov",
+    "license": "MIT",
+    "dependencies": {
+      "dotenv": "^16.4.5",
+      "node-telegram-bot-api": "^0.61.0"
+    }
+  }
+  
