@@ -12,7 +12,54 @@ if (!token || !ADMIN_ID) {
   process.exit(1);
 }
 
-const bot = new TelegramBot(token, { polling: true });
+// ================== Single instance guard (avoid 409 getUpdates conflict) ==================
+const LOCK_PATH = path.join(__dirname, '.bot.lock');
+
+function isProcessRunning(pid) {
+  if (!pid || Number.isNaN(Number(pid))) return false;
+  try {
+    process.kill(Number(pid), 0);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function acquireSingleInstanceLock() {
+  try {
+    // Try exclusive create; fails if file exists
+    const fd = fs.openSync(LOCK_PATH, 'wx');
+    fs.writeFileSync(fd, String(process.pid));
+    fs.closeSync(fd);
+    return true;
+  } catch (e) {
+    if (e && e.code === 'EEXIST') {
+      try {
+        const existingPidStr = fs.readFileSync(LOCK_PATH, 'utf8').trim();
+        const existingPid = Number(existingPidStr);
+        if (!isProcessRunning(existingPid)) {
+          // Stale lock — remove and retry once
+          fs.unlinkSync(LOCK_PATH);
+          return acquireSingleInstanceLock();
+        }
+      } catch (_) { /* ignore and treat as active */ }
+      console.error('❗ Boshqa bot instansiyasi ishlayapti (lock mavjud). Bu nusxa chiqadi.');
+      process.exit(0);
+    }
+    throw e;
+  }
+}
+
+function releaseSingleInstanceLock() {
+  try { fs.unlinkSync(LOCK_PATH); } catch (_) { /* ignore */ }
+}
+
+acquireSingleInstanceLock();
+process.on('exit', releaseSingleInstanceLock);
+process.on('SIGTERM', () => { releaseSingleInstanceLock(); process.exit(0); });
+process.on('SIGINT', () => { releaseSingleInstanceLock(); /* other SIGINT handlers may follow */ });
+
+const bot = new TelegramBot(token, { polling: { autoStart: false } });
 
 // ================== Fayl bazasi (contacts.json, legacy format + username) ==================
 const CONTACTS_PATH = path.join(__dirname, 'contacts.json');
@@ -501,7 +548,18 @@ bot.on('message', async (msg) => {
 });
 
 // ================== Xatolar ==================
-bot.on('polling_error', (err) => console.error('Polling error:', err?.message || err));
+bot.on('polling_error', async (err) => {
+  const msg = err?.message || String(err);
+  console.error('Polling error:', msg);
+  const statusCode = err?.response?.statusCode || err?.code;
+  const is409 = /\b409\b/.test(String(statusCode)) || /409/.test(msg);
+  if (is409) {
+    console.error('⚠️  409 Conflict: boshqa getUpdates so‘rovi ishlamoqda. Ushbu instansiya to‘xtatiladi.');
+    try { await bot.stopPolling(); } catch (_) {}
+    // Process exits so that faqat bitta instansiya qoladi
+    process.exit(0);
+  }
+});
 process.on('uncaughtException', (e) => console.error('uncaughtException:', e));
 process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e));
 // Fayl eng pastiga (bot.on('polling_error', ...) dan keyin joylashtiring)
@@ -511,4 +569,26 @@ process.on('SIGINT', () => {
       process.exit(0);
     }, 500);
   });
+
+// ================== Start polling after handlers are registered ==================
+(async () => {
+  try {
+    // Webhook yoqilgan bo'lsa polling ishlamaydi, shuning uchun o'chiramiz
+    await bot.deleteWebHook({ drop_pending_updates: true });
+  } catch (e) {
+    console.warn('deleteWebHook bajarilmadi:', e?.message || e);
+  }
+
+  try {
+    await bot.startPolling();
+    console.log('✅ Polling boshlandi.');
+  } catch (e) {
+    console.error('Polling start xatosi:', e?.message || e);
+    const msg = e?.message || '';
+    if (/409/.test(msg)) {
+      console.error('⚠️  409 Conflict: boshqa instansiya ishlamoqda. Chiqib ketiladi.');
+      process.exit(0);
+    }
+  }
+})();
 
